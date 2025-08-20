@@ -2,35 +2,64 @@ import streamlit as st
 from langchain_groq import ChatGroq
 from dotenv import load_dotenv
 import os
+import time
 
-# Load variables from .env
+# Load environment variables
 load_dotenv()
-
-# Access the key
 groq_api_key = os.getenv("GROQ_API_KEY")
 
-st.title("🤖 Groq Chatbot with Streamlit")
+# Initialize chat history
+if "chat_history" not in st.session_state:
+    st.session_state.chat_history = []
 
-# Function to generate responses
-def generate_response(input_text):
+st.title("🤖 Groq Chatbot")
+
+# Placeholder for chat messages
+chat_placeholder = st.empty()
+# Placeholder for typing indicator (above input)
+typing_placeholder = st.empty()
+
+def render_chat():
+    """Render all chat messages in the placeholder."""
+    with chat_placeholder.container():
+        for entry in st.session_state.chat_history:
+            with st.chat_message("user"):
+                st.markdown(entry["user"])
+            with st.chat_message("assistant"):
+                st.markdown(entry["bot"])
+
+def generate_response(user_input):
+    """Generate response from Groq and update chat history."""
+    # Show typing indicator above input
+    typing_placeholder.markdown("💬 Bot is typing...")
+
     model = ChatGroq(
-        model="llama-3.1-8b-instant",  # You can switch to llama-3.1-70b if needed
+        model="llama-3.1-8b-instant",
         temperature=0.7,
         api_key=groq_api_key
     )
-    response = model.invoke(input_text)
-    st.info(response.content)
 
-# Chat form
-with st.form("my_form"):
-    text = st.text_area(
-        "Enter text:",
-        "What are the three key pieces of advice for learning how to code?",
-    )
-    submitted = st.form_submit_button("Submit")
+    # Build context from history
+    context = ""
+    for entry in st.session_state.chat_history:
+        context += f"User: {entry['user']}\nBot: {entry['bot']}\n"
+    context += f"User: {user_input}\n"
 
-    # Validation
-    if not groq_api_key:
-        st.error("❌ No Groq API key found. Please set GROQ_API_KEY in your .env file.")
-    elif submitted:
-        generate_response(text)
+    response = model.invoke(context)
+
+    # Remove typing indicator and append new message
+    typing_placeholder.empty()
+    st.session_state.chat_history.append({"user": user_input, "bot": response.content})
+    render_chat()  # Immediately show the new message
+
+# Initial render
+render_chat()
+
+# Chat input (fires immediately on Enter)
+user_text = st.chat_input("Type your message...")
+
+if user_text:
+    generate_response(user_text)
+
+
+        #   streamlit run /workspaces/blank-app/streamlit_app.py
