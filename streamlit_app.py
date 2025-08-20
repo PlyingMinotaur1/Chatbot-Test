@@ -39,7 +39,7 @@ def generate_response(user_input):
     typing_placeholder.markdown("💬 Bot is typing...")
 
     model = ChatGroq(
-        model="llama-3.1-8b-instant",
+        model="llama-3.3-70b-versatile",
         temperature=0.7,
         api_key=groq_api_key
     )
