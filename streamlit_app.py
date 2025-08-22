@@ -1,36 +1,73 @@
 import streamlit as st
-from langchain_groq import ChatGroq
+from langchain_groq import ChatGroq  # or DeepSeek if that's what you're using
 from dotenv import load_dotenv
 import os
 
-# Load variables from .env
+# Load environment variables
 load_dotenv()
-
-# Access the key
 groq_api_key = os.getenv("GROQ_API_KEY")
 
-st.title("🤖 Groq Chatbot with Streamlit")
+# Initialize chat history
+if "chat_history" not in st.session_state:
+    st.session_state.chat_history = []
 
-# Function to generate responses
-def generate_response(input_text):
+st.title("🤖 Chatbot")
+
+# Placeholders
+chat_placeholder = st.empty()
+typing_placeholder = st.empty()
+
+def render_chat():
+    """Render all chat messages."""
+    with chat_placeholder.container():
+        for entry in st.session_state.chat_history:
+            with st.chat_message("user"):
+                st.markdown(entry["user"])
+            with st.chat_message("assistant"):
+                st.markdown(entry["bot"])
+
+def clean_response(text: str) -> str:
+    """Remove unwanted tokens like <think> from the start of responses."""
+    cleaned = text.strip()
+    if cleaned.startswith("<think>"):
+        cleaned = cleaned[len("<think>"):].strip()
+    return cleaned
+
+def generate_response(user_input):
+    """Send user input to the model and update chat."""
+    # Show typing indicator above input
+    typing_placeholder.markdown("💬 Bot is typing...")
+
     model = ChatGroq(
-        model="llama-3.1-8b-instant",  # You can switch to llama-3.1-70b if needed
+        model="llama-3.3-70b-versatile",
         temperature=0.7,
         api_key=groq_api_key
     )
-    response = model.invoke(input_text)
-    st.info(response.content)
 
-# Chat form
-with st.form("my_form"):
-    text = st.text_area(
-        "Enter text:",
-        "What are the three key pieces of advice for learning how to code?",
-    )
-    submitted = st.form_submit_button("Submit")
+    # Build context from chat history
+    context = ""
+    for entry in st.session_state.chat_history:
+        context += f"User: {entry['user']}\nBot: {entry['bot']}\n"
+    context += f"User: {user_input}\n"
 
-    # Validation
-    if not groq_api_key:
-        st.error("❌ No Groq API key found. Please set GROQ_API_KEY in your .env file.")
-    elif submitted:
-        generate_response(text)
+    response = model.invoke(context)
+
+    # Clean the response
+    response_text = clean_response(response.content)
+
+    # Remove typing indicator and update chat history
+    typing_placeholder.empty()
+    st.session_state.chat_history.append({"user": user_input, "bot": response_text})
+    render_chat()
+
+# Initial render
+render_chat()
+
+# Chat input
+user_text = st.chat_input("Type your message...")
+
+if user_text and groq_api_key:
+    generate_response(user_text)
+
+
+        #   streamlit run /workspaces/blank-app/streamlit_app.py
