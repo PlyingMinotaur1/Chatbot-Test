@@ -1,17 +1,51 @@
 import streamlit as st
 import requests
 import json
-from langchain_groq import ChatGroq  # or your AI library
+from base64 import b64encode
+from langchain_groq import ChatGroq
 
 # ----------------------------
-# Load secrets
+# Load secrets from Streamlit
 # ----------------------------
-OSTICKET_URL = st.secrets["OSTICKET_URL"]
-OSTICKET_API_KEY = st.secrets["OSTICKET_API_KEY"]
+ADO_ORG = st.secrets["ADO_ORG"]       # e.g., "myorg"
+ADO_PROJECT = st.secrets["ADO_PROJECT"]  # e.g., "MyProject"
+ADO_PAT = st.secrets["ADO_PAT"]       # Personal Access Token
 GROQ_API_KEY = st.secrets["GROQ_API_KEY"]
 
 # ----------------------------
-# AI Model Setup
+# Chat history placeholder
+# ----------------------------
+if "chat_history" not in st.session_state:
+    st.session_state.chat_history = []
+
+chat_placeholder = st.empty()
+typing_placeholder = st.empty()
+
+def render_chat():
+    """Render chat messages."""
+    with chat_placeholder.container():
+        for entry in st.session_state.chat_history:
+            with st.chat_message("user"):
+                st.markdown(entry["user"])
+            with st.chat_message("assistant"):
+                st.markdown(entry["bot"])
+
+# ----------------------------
+# Ticket state
+# ----------------------------
+if "ticket_state" not in st.session_state:
+    st.session_state.ticket_state = {
+        "user_name": "",
+        "user_email": "",
+        "user_problem": "",
+        "title": "",
+        "description": "",
+        "priority": 2,
+        "step": "ask_name"
+    }
+
+# ----------------------------
+# AI Model
 # ----------------------------
 model = ChatGroq(
     model="llama-3.3-70b-versatile",
@@ -19,126 +53,108 @@ model = ChatGroq(
     api_key=GROQ_API_KEY
 )
 
+def generate_ai_prompt(state):
+    """Generate AI prompt for work item creation."""
+    return f"""
+    You are a support assistant. Create an Azure DevOps work item from this info:
+    Name: {state['user_name']}
+    Email: {state['user_email']}
+    Problem: {state['user_problem']}
+
+    Return JSON only with fields:
+    - title: short work item title
+    - description: detailed description
+    - priority: 1=low, 2=medium, 3=high
+    """
+
 # ----------------------------
-# Ticket creation function
+# Azure DevOps API
 # ----------------------------
-def create_ticket(name, email, subject, message, priority=3):
-    data = {
-        "name": name,
-        "email": email,
-        "subject": subject,
-        "message": message,
-        "priority": priority
-    }
+def create_ado_work_item(title, description, priority=2):
+    url = f"https://dev.azure.com/{ADO_ORG}/{ADO_PROJECT}/_apis/wit/workitems/$Issue?api-version=7.0"
+    
+    # Azure DevOps expects JSON Patch content
+    payload = [
+        {"op": "add", "path": "/fields/System.Title", "value": title},
+        {"op": "add", "path": "/fields/System.Description", "value": description},
+        {"op": "add", "path": "/fields/Microsoft.VSTS.Common.Priority", "value": priority}
+    ]
+    
+    auth_token = b64encode(f":{ADO_PAT}".encode()).decode()
     headers = {
-        "X-API-Key": OSTICKET_API_KEY,
-        "Content-Type": "application/json"
+        "Content-Type": "application/json-patch+json",
+        "Authorization": f"Basic {auth_token}"
     }
-    response = requests.post(OSTICKET_URL, json=data, headers=headers)
-    if response.status_code == 201:
+    
+    response = requests.post(url, headers=headers, json=payload)
+    if response.status_code in [200, 201]:
         try:
-            ticket_info = response.json()  # Try parsing JSON
-        except ValueError:
-            ticket_info = {}  # fallback if no JSON returned
-        return True, ticket_info
+            work_item = response.json()
+            return True, work_item.get("id", "unknown")
+        except:
+            return True, "unknown"
     else:
         return False, response.text
 
 # ----------------------------
-# Clean AI output before JSON parsing
+# Process user input
 # ----------------------------
-def clean_ai_json(raw_text):
-    cleaned = raw_text.strip()
-    
-    # Remove leading/trailing backticks
-    if cleaned.startswith("```"):
-        cleaned = cleaned.lstrip("`").strip()
-    if cleaned.endswith("```"):
-        cleaned = cleaned.rstrip("`").strip()
-    
-    # Take only up to the last closing brace
-    last_brace = cleaned.rfind("}")
-    if last_brace != -1:
-        cleaned = cleaned[:last_brace+1]
-    
-    return cleaned
+def process_input(user_input: str):
+    state = st.session_state.ticket_state
+    step = state["step"]
+    bot_response = ""
 
-# ----------------------------
-# AI generates ticket (JSON-safe)
-# ----------------------------
-def ai_generate_ticket(user_description):
-    prompt = f"""
-    You are a support assistant. Convert this problem description into a JSON object with keys:
-    - subject: short summary
-    - message: detailed description
-    - priority: 1=low, 2=medium, 3=high
+    if step == "ask_name":
+        state["user_name"] = user_input.strip()
+        state["step"] = "ask_email"
+        bot_response = "Thanks! What's your email address?"
+    elif step == "ask_email":
+        state["user_email"] = user_input.strip()
+        state["step"] = "ask_problem"
+        bot_response = "Great! Please describe the problem you are experiencing."
+    elif step == "ask_problem":
+        state["user_problem"] = user_input.strip()
+        # Generate title/description using AI
+        response = model.invoke(generate_ai_prompt(state))
+        try:
+            ticket_data = json.loads(response.content.strip().strip('`'))
+            state["title"] = ticket_data.get("title", "Support Request")
+            state["description"] = ticket_data.get("description", state["user_problem"])
+            state["priority"] = ticket_data.get("priority", 2)
+        except:
+            state["title"] = "Support Request"
+            state["description"] = state["user_problem"]
+            state["priority"] = 2
+        state["step"] = "confirm"
+        bot_response = f"I will create a work item with title: \"{state['title']}\". Is this correct? (Yes/No)"
+    elif step == "confirm":
+        if user_input.lower() in ["yes", "y"]:
+            success, work_item_id = create_ado_work_item(
+                state["title"], state["description"], state["priority"]
+            )
+            if success:
+                bot_response = f"✅ Work item created successfully! ID: {work_item_id}. Updates will be sent to {state['user_email']}."
+            else:
+                bot_response = f"❌ Failed to create the work item: {work_item_id}"
+            state["step"] = "done"
+        else:
+            bot_response = "Okay, let's try again. Please describe your problem."
+            state["step"] = "ask_problem"
 
-    Return only valid JSON without any extra text or backticks.
-
-    Problem: "{user_description}"
-    """
-    response = model.invoke(prompt)
-    cleaned_text = clean_ai_json(response.content)
-    
-    try:
-        ticket_data = json.loads(cleaned_text)
-        return ticket_data
-    except json.JSONDecodeError as e:
-        st.error(f"AI failed to generate valid JSON: {e}\nRaw output: {response.content}")
-        return None
+    st.session_state.chat_history.append({"user": user_input, "bot": bot_response})
+    render_chat()
 
 # ----------------------------
 # Streamlit UI
 # ----------------------------
-st.title("AI-Driven Ticket Creation with Review")
+st.title("💬 Azure DevOps Support Chatbot")
 
-st.info("Describe your problem. AI will suggest a ticket, and you can review/edit before submitting.")
+render_chat()
 
-# User input
-user_problem = st.text_area("Problem description")
-name = st.text_input("Your Name")
-email = st.text_input("Your Email")
-
-# Step 1: Generate AI suggestion
-if st.button("Generate Ticket Suggestion"):
-    if not (user_problem and name and email):
-        st.warning("Please fill out all fields.")
-    else:
-        ticket_fields = ai_generate_ticket(user_problem)
-        if ticket_fields:
-            st.session_state.suggested_subject = ticket_fields.get("subject", "")
-            st.session_state.suggested_message = ticket_fields.get("message", "")
-            st.session_state.suggested_priority = ticket_fields.get("priority", 2)  # default medium
-            st.success("AI generated a ticket suggestion below. You can edit it before submitting.")
-
-# Step 2: Review & edit AI suggestion
-if "suggested_subject" in st.session_state:
-    subject = st.text_input("Subject", value=st.session_state.suggested_subject)
-    message = st.text_area("Message", value=st.session_state.suggested_message)
-    
-    # Priority mapping: 1=Low, 2=Medium, 3=High
-    priority = st.selectbox(
-        "Priority", 
-        [1, 2, 3], 
-        index=st.session_state.suggested_priority - 1,
-        format_func=lambda x: {1:"Low", 2:"Medium", 3:"High"}[x]
-    )
-
-    if st.button("Submit Ticket"):
-        success, result = create_ticket(
-            name=name,
-            email=email,
-            subject=subject,
-            message=message,
-            priority=priority
-        )
-        if success:
-            ticket_id = result.get('id', 'unknown') if isinstance(result, dict) else 'unknown'
-            st.success(f"Ticket created successfully! Ticket ID: {ticket_id}")
-        else:
-            st.error(f"Error creating ticket: {result}")
+if user_text := st.chat_input("Type your message..."):
+    process_input(user_text)
 
 # ----------------------------
-# To run this app from terminal:
+# Run command reminder
+# ----------------------------
 # streamlit run Chatbot-Test/streamlit_app.py
-# ----------------------------

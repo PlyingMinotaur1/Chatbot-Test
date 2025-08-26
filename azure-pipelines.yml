@@ -1,37 +1,37 @@
-# Python package
-# Create and test a Python package on multiple Python versions.
-# Add steps that analyze code, save the dist with the build record, publish to a PyPI-compatible index, and more:
-# https://docs.microsoft.com/azure/devops/pipelines/languages/python
-
+# azure-pipelines.yml
 trigger:
-- main
+  branches:
+    include:
+      - main   # Change if your default branch is different
 
 pool:
-  vmImage: ubuntu-latest
+  vmImage: 'ubuntu-latest'
 
-strategy:
-  matrix:
-    Python38:
-      python.version: '3.8'
-    Python39:
-      python.version: '3.9'
-    Python310:
-      python.version: '3.10'
-    Python311:
-      python.version: '3.11'
+variables:
+  # Reference secrets from Azure DevOps Library
+  ADO_PAT: $(ADO_PAT)         # Your Azure DevOps PAT stored as secret
+  GROQ_API_KEY: $(GROQ_API_KEY) # Your Groq API key stored as secret
 
 steps:
+# Step 1: Checkout code from GitHub
+- checkout: self
+  persistCredentials: true
+
+# Step 2: Set up Python environment
 - task: UsePythonVersion@0
   inputs:
-    versionSpec: '$(python.version)'
-  displayName: 'Use Python $(python.version)'
+    versionSpec: '3.13'
 
+# Step 3: Install dependencies
 - script: |
     python -m pip install --upgrade pip
     pip install -r requirements.txt
-  displayName: 'Install dependencies'
+  displayName: 'Install Python dependencies'
 
+# Step 4: Run Streamlit app
 - script: |
-    pip install pytest pytest-azurepipelines
-    pytest
-  displayName: 'pytest'
+    echo "Starting Streamlit Chatbot"
+    export ADO_PAT=$(ADO_PAT)
+    export GROQ_API_KEY=$(GROQ_API_KEY)
+    streamlit run Chatbot-Test/streamlit_app.py --server.port 8501 --server.headless true
+  displayName: 'Run Streamlit app'
